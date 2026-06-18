@@ -59,13 +59,17 @@ jobs:
 
       - name: Roll back
         run: |
+          # The broken-deploy lever (CHAOS_ON_BOOT) was just cleared above, which already rolls a
+          # healthy pod. Roll FORWARD onto that cleared spec — do NOT `rollout undo`, which would
+          # revert the env-clear straight back to the broken revision. With to_sha, also pin the
+          # image to that known-good build.
           if ($env:TO_SHA) {
             $img = "sre-lab-" + $env:SERVICE + ":" + $env:TO_SHA
             Write-Host ("redeploying " + $env:SERVICE + " -> " + $img)
             kubectl --context $env:KCTX -n lab set image ("deploy/" + $env:SERVICE) ($env:SERVICE + "=" + $img)
           } else {
-            Write-Host ("rolling back " + $env:SERVICE + " one revision")
-            kubectl --context $env:KCTX -n lab rollout undo ("deploy/" + $env:SERVICE)
+            Write-Host ("rolling back " + $env:SERVICE + " (clearing the bad deploy + rolling forward)")
+            kubectl --context $env:KCTX -n lab rollout restart ("deploy/" + $env:SERVICE)
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
