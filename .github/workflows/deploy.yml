@@ -31,7 +31,9 @@ jobs:
     runs-on: self-hosted   # the demo machine running the kind-sre-lab cluster
     defaults:
       run:
-        shell: powershell
+        # -ExecutionPolicy Bypass: the runner's default policy is Restricted, which blocks the
+        # generated .ps1 — bypass it per-invocation (no machine-wide policy change needed).
+        shell: powershell -ExecutionPolicy Bypass -Command ". '{0}'"
     env:
       SERVICE: ${{ github.event.inputs.service }}
       KCTX: kind-sre-lab
