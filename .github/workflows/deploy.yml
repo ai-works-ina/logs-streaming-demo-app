@@ -49,6 +49,10 @@ jobs:
               Write-Host "::error::'$t' is not on the runner PATH"; exit 1
             }
           }
+          # the kind-sre-lab context lives in the cluster-creator's kubeconfig; the runner may run
+          # as a different account, so regenerate it from the running cluster (kind reads docker).
+          kind export kubeconfig --name $env:CLUSTER
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::kind export kubeconfig failed — is cluster '$env:CLUSTER' up and docker reachable from the runner?"; exit 1 }
           kubectl --context $env:KCTX -n lab get ns lab | Out-Null
           if ($LASTEXITCODE -ne 0) { Write-Host "::error::cannot reach $env:KCTX / namespace lab from the runner"; exit 1 }
           Write-Host "preflight ok: docker, kind, kubectl reachable; cluster up"

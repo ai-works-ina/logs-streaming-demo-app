@@ -34,12 +34,18 @@ jobs:
       SERVICE: ${{ github.event.inputs.service }}
       TO_SHA: ${{ github.event.inputs.to_sha }}
       KCTX: kind-sre-lab
+      CLUSTER: sre-lab
     steps:
       - name: Preflight — runner can reach the cluster
         run: |
-          if (-not (Get-Command kubectl -ErrorAction SilentlyContinue)) {
-            Write-Host "::error::'kubectl' is not on the runner PATH"; exit 1
+          foreach ($t in 'kind','kubectl') {
+            if (-not (Get-Command $t -ErrorAction SilentlyContinue)) {
+              Write-Host "::error::'$t' is not on the runner PATH"; exit 1
+            }
           }
+          # regenerate the kind-sre-lab context into the runner's kubeconfig from the live cluster
+          kind export kubeconfig --name $env:CLUSTER
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::kind export kubeconfig failed — is cluster '$env:CLUSTER' up and docker reachable from the runner?"; exit 1 }
           kubectl --context $env:KCTX -n lab get ns lab | Out-Null
           if ($LASTEXITCODE -ne 0) { Write-Host "::error::cannot reach $env:KCTX / namespace lab from the runner"; exit 1 }
           Write-Host "preflight ok"
