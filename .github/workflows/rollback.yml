@@ -45,7 +45,7 @@ jobs:
           }
           # regenerate the kind-sre-lab context into the runner's kubeconfig from the live cluster
           kind export kubeconfig --name $env:CLUSTER
-          if ($LASTEXITCODE -ne 0) { Write-Host "::error::kind export kubeconfig failed — is cluster '$env:CLUSTER' up and docker reachable from the runner?"; exit 1 }
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::kind export kubeconfig failed - is cluster '$env:CLUSTER' up and docker reachable from the runner?"; exit 1 }
           kubectl --context $env:KCTX -n lab get ns lab | Out-Null
           if ($LASTEXITCODE -ne 0) { Write-Host "::error::cannot reach $env:KCTX / namespace lab from the runner"; exit 1 }
           Write-Host "preflight ok"
