@@ -1,0 +1,59 @@
+# Deploy a lab service to the kind cluster. Runs on a SELF-HOSTED runner on the demo machine
+# (it needs the local docker + the `kind-sre-lab` kube context). Triggered manually (or by the
+# agent's rollback twin / the dashboard) via workflow_dispatch.
+#
+# The `broken` input is the CI/CD demo lever: a "broken" deploy ships the same image with
+# CHAOS_ON_BOOT=errors, so the service comes up faulty — the agent detects the error spike,
+# correlation attributes it to this deploy (coincidence in the change feed), and proposes a
+# rollback. A normal deploy clears CHAOS_ON_BOOT (a healthy ship).
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: lab service to deploy
+        type: choice
+        default: api
+        options: [api, webapp, auth, payments, worker]
+      broken:
+        description: ship a broken build (CHAOS_ON_BOOT=errors)
+        type: boolean
+        default: false
+
+concurrency: deploy-${{ github.event.inputs.service }}
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, sre-lab]
+    env:
+      SERVICE: ${{ github.event.inputs.service }}
+      SHA: ${{ github.sha }}
+      KCTX: kind-sre-lab
+      CLUSTER: sre-lab
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image tagged with the commit SHA
+        run: docker build -t "sre-lab-${SERVICE}:${SHA}" "services/${SERVICE}"
+
+      - name: Load the image into kind
+        run: kind load docker-image "sre-lab-${SERVICE}:${SHA}" --name "$CLUSTER"
+
+      - name: Set CHAOS_ON_BOOT (broken deploy lever)
+        run: |
+          if [ "${{ github.event.inputs.broken }}" = "true" ]; then
+            kubectl --context "$KCTX" -n lab set env "deploy/${SERVICE}" CHAOS_ON_BOOT=errors
+          else
+            kubectl --context "$KCTX" -n lab set env "deploy/${SERVICE}" CHAOS_ON_BOOT=
+          fi
+
+      - name: Roll the deployment to the new image
+        run: kubectl --context "$KCTX" -n lab set image "deploy/${SERVICE}" "${SERVICE}=sre-lab-${SERVICE}:${SHA}"
+
+      - name: Wait for rollout
+        run: kubectl --context "$KCTX" -n lab rollout status "deploy/${SERVICE}" --timeout=120s
+
+      - name: Summary
+        run: |
+          echo "deployed ${SERVICE} @ ${SHA} (broken=${{ github.event.inputs.broken }})" >> "$GITHUB_STEP_SUMMARY"

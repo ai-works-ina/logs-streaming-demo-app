@@ -1,0 +1,50 @@
+# Roll a lab service back to a previous known-good build — the cure half of the bad-deploy beat.
+# The SRE agent invokes this (Tier-2, after human approval) when it attributes an incident to a
+# recent deploy: "CI/CD as ActionBackend" (VISION). Also runnable manually. Self-hosted runner.
+#
+# With `to_sha` set, it redeploys that image tag and clears the broken-deploy lever; left empty,
+# it does a `kubectl rollout undo` (back one revision). Either way CHAOS_ON_BOOT is cleared, so
+# the rolled-back service comes up healthy.
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: lab service to roll back
+        type: choice
+        default: api
+        options: [api, webapp, auth, payments, worker]
+      to_sha:
+        description: image SHA to roll back to (blank = previous revision via rollout undo)
+        type: string
+        default: ""
+
+concurrency: deploy-${{ github.event.inputs.service }}   # serialise with deploy.yml
+
+jobs:
+  rollback:
+    runs-on: [self-hosted, sre-lab]
+    env:
+      SERVICE: ${{ github.event.inputs.service }}
+      TO_SHA: ${{ github.event.inputs.to_sha }}
+      KCTX: kind-sre-lab
+    steps:
+      - name: Clear the broken-deploy lever
+        run: kubectl --context "$KCTX" -n lab set env "deploy/${SERVICE}" CHAOS_ON_BOOT=
+
+      - name: Roll back
+        run: |
+          if [ -n "$TO_SHA" ]; then
+            echo "redeploying ${SERVICE} -> sre-lab-${SERVICE}:${TO_SHA}"
+            kubectl --context "$KCTX" -n lab set image "deploy/${SERVICE}" "${SERVICE}=sre-lab-${SERVICE}:${TO_SHA}"
+          else
+            echo "rolling back ${SERVICE} one revision"
+            kubectl --context "$KCTX" -n lab rollout undo "deploy/${SERVICE}"
+          fi
+
+      - name: Wait for rollout
+        run: kubectl --context "$KCTX" -n lab rollout status "deploy/${SERVICE}" --timeout=120s
+
+      - name: Summary
+        run: echo "rolled back ${SERVICE} to '${TO_SHA:-previous revision}'" >> "$GITHUB_STEP_SUMMARY"
