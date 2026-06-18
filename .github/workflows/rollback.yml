@@ -24,7 +24,7 @@ concurrency: deploy-${{ github.event.inputs.service }}   # serialise with deploy
 
 jobs:
   rollback:
-    runs-on: [self-hosted, sre-lab]
+    runs-on: self-hosted   # the demo machine running the kind-sre-lab cluster
     env:
       SERVICE: ${{ github.event.inputs.service }}
       TO_SHA: ${{ github.event.inputs.to_sha }}

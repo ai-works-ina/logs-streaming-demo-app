@@ -25,7 +25,7 @@ concurrency: deploy-${{ github.event.inputs.service }}
 
 jobs:
   deploy:
-    runs-on: [self-hosted, sre-lab]
+    runs-on: self-hosted   # the demo machine running the kind-sre-lab cluster
     env:
       SERVICE: ${{ github.event.inputs.service }}
       SHA: ${{ github.sha }}
