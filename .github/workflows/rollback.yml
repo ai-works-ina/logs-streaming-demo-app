@@ -25,11 +25,21 @@ concurrency: deploy-${{ github.event.inputs.service }}   # serialise with deploy
 jobs:
   rollback:
     runs-on: self-hosted   # the demo machine running the kind-sre-lab cluster
+    defaults:
+      run:
+        shell: bash        # Windows runner defaults to PowerShell; these steps are bash (Git Bash)
     env:
       SERVICE: ${{ github.event.inputs.service }}
       TO_SHA: ${{ github.event.inputs.to_sha }}
       KCTX: kind-sre-lab
     steps:
+      - name: Preflight — runner can reach the cluster
+        run: |
+          command -v kubectl >/dev/null || { echo "::error::'kubectl' not on the runner PATH"; exit 1; }
+          kubectl --context "$KCTX" -n lab get ns lab >/dev/null \
+            || { echo "::error::cannot reach $KCTX / namespace lab from the runner"; exit 1; }
+          echo "preflight ok"
+
       - name: Clear the broken-deploy lever
         run: kubectl --context "$KCTX" -n lab set env "deploy/${SERVICE}" CHAOS_ON_BOOT=
 
