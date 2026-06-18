@@ -23,8 +23,8 @@ data:
           filter_server_spans: false
       storage:
         path: /var/tempo/generator/wal
-        traces_storage:
-          path: /var/tempo/generator/traces
+      traces_storage:
+        path: /var/tempo/generator/traces
     storage:
       trace:
         backend: local
