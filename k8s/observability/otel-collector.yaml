@@ -1,0 +1,59 @@
+# OpenTelemetry Collector: receives OTLP from the instrumented services (the apps point at
+# http://otel-collector:4318, unchanged) and forwards to Tempo. Config verbatim from
+# observability/otel-collector.yaml. In-cluster only (no NodePort).
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: otel-conf, namespace: lab}
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      batch: {}
+    exporters:
+      otlp/tempo:
+        endpoint: tempo:4317
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp/tempo]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: otel-collector, namespace: lab, labels: {app: otel-collector, tier: obs}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: otel-collector}}
+  template:
+    metadata: {labels: {app: otel-collector, tier: obs}}
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.109.0
+          args: ["--config=/etc/otel/config.yaml"]
+          ports:
+            - {name: otlp-grpc, containerPort: 4317}
+            - {name: otlp-http, containerPort: 4318}
+          volumeMounts:
+            - {name: conf, mountPath: /etc/otel, readOnly: true}
+      volumes:
+        - name: conf
+          configMap: {name: otel-conf}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: otel-collector, namespace: lab}
+spec:
+  selector: {app: otel-collector}
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: 4317}
+    - {name: otlp-http, port: 4318, targetPort: 4318}

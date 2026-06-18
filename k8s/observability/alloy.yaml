@@ -1,0 +1,88 @@
+# Grafana Alloy as a DaemonSet — the k8s replacement for the compose docker.sock log tailer.
+# Instead of discovering Docker containers, it discovers pods in the `lab` namespace and tails
+# their logs via the Kubernetes API (loki.source.kubernetes — no host log-file mounts), pushing
+# to Loki with service=<pod app label> so the agent's LokiLogSource can query {service="api"}.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: alloy, namespace: lab}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: lab-alloy}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, nodes, services, endpoints]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: lab-alloy}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: lab-alloy}
+subjects:
+  - {kind: ServiceAccount, name: alloy, namespace: lab}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: alloy-conf, namespace: lab}
+data:
+  config.alloy: |
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    // keep only lab-namespace pods; map the `app` label -> service="api" etc.
+    discovery.relabel "lab_pods" {
+      targets = discovery.kubernetes.pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        regex         = "lab"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app"]
+        target_label  = "service"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+    }
+
+    loki.source.kubernetes "pods" {
+      targets    = discovery.relabel.lab_pods.output
+      forward_to = [loki.write.default.receiver]
+    }
+
+    loki.write "default" {
+      endpoint {
+        url = "http://loki:3100/loki/api/v1/push"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: alloy, namespace: lab, labels: {app: alloy, tier: obs}}
+spec:
+  selector: {matchLabels: {app: alloy}}
+  template:
+    metadata: {labels: {app: alloy, tier: obs}}
+    spec:
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.3.1
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --server.http.listen-addr=0.0.0.0:12345
+          ports: [{name: http, containerPort: 12345}]
+          volumeMounts:
+            - {name: conf, mountPath: /etc/alloy, readOnly: true}
+      volumes:
+        - name: conf
+          configMap: {name: alloy-conf}

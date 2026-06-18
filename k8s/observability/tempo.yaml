@@ -1,0 +1,73 @@
+# Tempo single-binary. Receives OTLP (gRPC :4317) from the otel-collector, serves TraceQL on
+# :3200 for the agent's TraceSource. Config verbatim from observability/tempo.yaml. Ephemeral
+# storage (demo). HTTP exposed at localhost:3200 via NodePort 30032; gRPC 4317 is in-cluster only.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: tempo-conf, namespace: lab}
+data:
+  tempo.yaml: |
+    stream_over_http_enabled: true
+    server:
+      http_listen_port: 3200
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+    ingester:
+      max_block_duration: 5m
+    metrics_generator:
+      processor:
+        local_blocks:
+          filter_server_spans: false
+      storage:
+        path: /var/tempo/generator/wal
+        traces_storage:
+          path: /var/tempo/generator/traces
+    storage:
+      trace:
+        backend: local
+        wal:
+          path: /var/tempo/wal
+        local:
+          path: /var/tempo/blocks
+    overrides:
+      defaults:
+        metrics_generator:
+          processors: [local-blocks]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: tempo, namespace: lab, labels: {app: tempo, tier: obs}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: tempo}}
+  template:
+    metadata: {labels: {app: tempo, tier: obs}}
+    spec:
+      containers:
+        - name: tempo
+          image: grafana/tempo:2.6.0
+          args: ["-config.file=/etc/tempo/tempo.yaml"]
+          ports:
+            - {name: http, containerPort: 3200}
+            - {name: otlp-grpc, containerPort: 4317}
+          volumeMounts:
+            - {name: conf, mountPath: /etc/tempo, readOnly: true}
+            - {name: data, mountPath: /var/tempo}
+      volumes:
+        - name: conf
+          configMap: {name: tempo-conf}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: tempo, namespace: lab}
+spec:
+  type: NodePort
+  selector: {app: tempo}
+  ports:
+    - {name: http, port: 3200, targetPort: 3200, nodePort: 30032}
+    - {name: otlp-grpc, port: 4317, targetPort: 4317}

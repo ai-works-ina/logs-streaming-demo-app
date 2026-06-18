@@ -1,0 +1,91 @@
+# Prometheus on k8s. Replaces the compose static-target list with pod service-discovery:
+# any pod annotated prometheus.io/scrape="true" in the `lab` namespace is scraped (api and
+# worker today). The app metrics already carry a `service` label, so the agent's PromQL
+# (http_requests_total{service="api"}, queue_depth, ...) is unchanged. Exposed at
+# localhost:9090 via NodePort 30090 (kind host mapping) — the agent's MetricSource URL is
+# identical to the compose lab.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: prometheus, namespace: lab}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: lab-prometheus}
+rules:
+  - apiGroups: [""]
+    resources: [pods, endpoints, services, nodes]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: lab-prometheus}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: lab-prometheus}
+subjects:
+  - {kind: ServiceAccount, name: prometheus, namespace: lab}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: prometheus-conf, namespace: lab}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 5s
+    scrape_configs:
+      - job_name: lab-pods
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [lab]
+        relabel_configs:
+          # only pods opting in via annotation
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          # honour a custom metrics path annotation
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # redirect the scrape to the annotated port
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          # context labels (the metric itself already carries `service`)
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: prometheus, namespace: lab, labels: {app: prometheus, tier: obs}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: prometheus}}
+  template:
+    metadata: {labels: {app: prometheus, tier: obs}}
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.54.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.retention.time=2h
+          ports: [{name: http, containerPort: 9090}]
+          volumeMounts:
+            - {name: conf, mountPath: /etc/prometheus, readOnly: true}
+      volumes:
+        - name: conf
+          configMap: {name: prometheus-conf}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: prometheus, namespace: lab}
+spec:
+  type: NodePort
+  selector: {app: prometheus}
+  ports: [{name: http, port: 9090, targetPort: 9090, nodePort: 30090}]

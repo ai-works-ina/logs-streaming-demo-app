@@ -1,0 +1,53 @@
+# Grafana for eyeballing the stack. Datasources point at the in-cluster Prometheus/Loki/Tempo
+# Services (DNS unchanged from compose). Anonymous admin (demo only). localhost:3000 via NodePort.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: grafana-datasources, namespace: lab}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://tempo:3200
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: grafana, namespace: lab, labels: {app: grafana, tier: obs}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: grafana}}
+  template:
+    metadata: {labels: {app: grafana, tier: obs}}
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.2.0
+          env:
+            - {name: GF_AUTH_ANONYMOUS_ENABLED, value: "true"}
+            - {name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Admin}
+            - {name: GF_SECURITY_ADMIN_PASSWORD, value: admin}
+          ports: [{name: http, containerPort: 3000}]
+          volumeMounts:
+            - {name: ds, mountPath: /etc/grafana/provisioning/datasources, readOnly: true}
+      volumes:
+        - name: ds
+          configMap: {name: grafana-datasources}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: grafana, namespace: lab}
+spec:
+  type: NodePort
+  selector: {app: grafana}
+  ports: [{name: http, port: 3000, targetPort: 3000, nodePort: 30030}]
