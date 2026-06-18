@@ -6,6 +6,9 @@
 # CHAOS_ON_BOOT=errors, so the service comes up faulty — the agent detects the error spike,
 # correlation attributes it to this deploy (coincidence in the change feed), and proposes a
 # rollback. A normal deploy clears CHAOS_ON_BOOT (a healthy ship).
+#
+# Steps run in PowerShell — the native shell on the Windows self-hosted runner (avoids the
+# `bash` -> WSL resolution trap). The image tag is built once as a job-level expression env var.
 name: deploy
 
 on:
@@ -28,44 +31,51 @@ jobs:
     runs-on: self-hosted   # the demo machine running the kind-sre-lab cluster
     defaults:
       run:
-        shell: bash        # Windows runner defaults to PowerShell; these steps are bash (Git Bash)
+        shell: powershell
     env:
       SERVICE: ${{ github.event.inputs.service }}
-      SHA: ${{ github.sha }}
       KCTX: kind-sre-lab
       CLUSTER: sre-lab
+      IMG: sre-lab-${{ github.event.inputs.service }}:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Preflight — runner has the lab tooling + cluster
         run: |
-          for t in docker kind kubectl; do
-            command -v "$t" >/dev/null || { echo "::error::'$t' not on the runner PATH"; exit 1; }
-          done
-          kubectl --context "$KCTX" -n lab get ns lab >/dev/null \
-            || { echo "::error::cannot reach $KCTX / namespace lab from the runner"; exit 1; }
-          echo "preflight ok: docker, kind, kubectl reachable; cluster up"
+          foreach ($t in 'docker','kind','kubectl') {
+            if (-not (Get-Command $t -ErrorAction SilentlyContinue)) {
+              Write-Host "::error::'$t' is not on the runner PATH"; exit 1
+            }
+          }
+          kubectl --context $env:KCTX -n lab get ns lab | Out-Null
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::cannot reach $env:KCTX / namespace lab from the runner"; exit 1 }
+          Write-Host "preflight ok: docker, kind, kubectl reachable; cluster up"
 
       - name: Build image tagged with the commit SHA
-        run: docker build -t "sre-lab-${SERVICE}:${SHA}" "services/${SERVICE}"
+        run: |
+          docker build -t $env:IMG ("services/" + $env:SERVICE)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Load the image into kind
-        run: kind load docker-image "sre-lab-${SERVICE}:${SHA}" --name "$CLUSTER"
+        run: |
+          kind load docker-image $env:IMG --name $env:CLUSTER
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Set CHAOS_ON_BOOT (broken deploy lever)
         run: |
-          if [ "${{ github.event.inputs.broken }}" = "true" ]; then
-            kubectl --context "$KCTX" -n lab set env "deploy/${SERVICE}" CHAOS_ON_BOOT=errors
-          else
-            kubectl --context "$KCTX" -n lab set env "deploy/${SERVICE}" CHAOS_ON_BOOT=
-          fi
+          $val = if ('${{ github.event.inputs.broken }}' -eq 'true') { 'CHAOS_ON_BOOT=errors' } else { 'CHAOS_ON_BOOT=' }
+          kubectl --context $env:KCTX -n lab set env ("deploy/" + $env:SERVICE) $val
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Roll the deployment to the new image
-        run: kubectl --context "$KCTX" -n lab set image "deploy/${SERVICE}" "${SERVICE}=sre-lab-${SERVICE}:${SHA}"
+        run: |
+          kubectl --context $env:KCTX -n lab set image ("deploy/" + $env:SERVICE) ($env:SERVICE + "=" + $env:IMG)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Wait for rollout
-        run: kubectl --context "$KCTX" -n lab rollout status "deploy/${SERVICE}" --timeout=120s
+        run: |
+          kubectl --context $env:KCTX -n lab rollout status ("deploy/" + $env:SERVICE) --timeout=120s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Summary
-        run: |
-          echo "deployed ${SERVICE} @ ${SHA} (broken=${{ github.event.inputs.broken }})" >> "$GITHUB_STEP_SUMMARY"
+        run: Add-Content $env:GITHUB_STEP_SUMMARY ("deployed " + $env:SERVICE + " @ " + "${{ github.sha }}" + " (broken=${{ github.event.inputs.broken }})")
