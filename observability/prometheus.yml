@@ -1,0 +1,22 @@
+# Prometheus scrape config for the lab. Each instrumented service exposes /metrics on :5000;
+# cAdvisor exposes per-container USE metrics. The SRE agent queries this Prometheus via PromQL.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: services
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - api:5000
+          - webapp:5000
+          - auth:5000
+          - payments:5000
+          - worker:5000
+        labels:
+          stack: sre-demo
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]

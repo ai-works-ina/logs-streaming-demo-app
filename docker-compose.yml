@@ -1,0 +1,251 @@
+name: sre-demo
+
+services:
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: gateway
+    ports:
+      - "8080:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - webapp
+    restart: unless-stopped
+    logging: &logcfg
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  webapp:
+    build: ./services/webapp
+    container_name: webapp
+    environment:
+      - SERVICE_NAME=webapp
+      - API_URL=http://api:5000
+      - REQUEST_TIMEOUT=3
+      - OTEL_ENABLED=1
+      - OTEL_SERVICE_NAME=webapp
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=none
+      - OTEL_LOGS_EXPORTER=none
+    depends_on:
+      - api
+    restart: unless-stopped
+    logging: *logcfg
+
+  api:
+    build: ./services/api
+    container_name: api
+    environment:
+      - SERVICE_NAME=api
+      - DB_HOST=postgres
+      - DB_USER=demo
+      - DB_PASSWORD=demo
+      - DB_NAME=demo
+      - REDIS_HOST=redis
+      - AUTH_URL=http://auth:5000
+      - OTEL_ENABLED=1
+      - OTEL_SERVICE_NAME=api
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=none
+      - OTEL_LOGS_EXPORTER=none
+    depends_on:
+      - postgres
+      - redis
+      - auth
+    restart: unless-stopped
+    # Memory cap so the memory-leak chaos scenario ends in a real OOM kill
+    mem_limit: 256m
+    logging: *logcfg
+
+  auth:
+    build: ./services/auth
+    container_name: auth
+    environment:
+      - SERVICE_NAME=auth
+      - REDIS_HOST=redis
+      - OTEL_ENABLED=1
+      - OTEL_SERVICE_NAME=auth
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=none
+      - OTEL_LOGS_EXPORTER=none
+    depends_on:
+      - redis
+    restart: unless-stopped
+    logging: *logcfg
+
+  payments:
+    build: ./services/payments
+    container_name: payments
+    environment:
+      - SERVICE_NAME=payments
+      - OTEL_ENABLED=1
+      - OTEL_SERVICE_NAME=payments
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=none
+      - OTEL_LOGS_EXPORTER=none
+    restart: unless-stopped
+    logging: *logcfg
+
+  worker:
+    build: ./services/worker
+    container_name: worker
+    environment:
+      - SERVICE_NAME=worker
+      - REDIS_HOST=redis
+      - DB_HOST=postgres
+      - DB_USER=demo
+      - DB_PASSWORD=demo
+      - DB_NAME=demo
+      - PAYMENTS_URL=http://payments:5000
+      - OTEL_ENABLED=1
+      - OTEL_SERVICE_NAME=worker
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=none
+      - OTEL_LOGS_EXPORTER=none
+    depends_on:
+      - redis
+      - postgres
+      - payments
+    restart: unless-stopped
+    logging: *logcfg
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=demo
+      - POSTGRES_PASSWORD=demo
+      - POSTGRES_DB=demo
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: unless-stopped
+    logging: *logcfg
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    logging: *logcfg
+
+  loadgen:
+    build: ./loadgen
+    container_name: loadgen
+    environment:
+      - TARGET_URL=http://gateway:80
+      - BASE_RPS=4
+    depends_on:
+      - gateway
+    restart: unless-stopped
+    logging: *logcfg
+
+  # ---- observability stack (free, self-hosted Grafana LGTM) --------------------------
+  # Metrics (Prometheus), logs (Loki + Alloy), traces (Tempo + OTel Collector), and a
+  # Grafana for eyeballing. The SRE agent queries Prometheus :9090, Loki :3100, Tempo :3200.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2h
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    logging: *logcfg
+
+  loki:
+    image: grafana/loki:3.1.1
+    container_name: loki
+    command: -config.file=/etc/loki/config.yaml
+    volumes:
+      - ./observability/loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+    logging: *logcfg
+
+  alloy:
+    image: grafana/alloy:v1.3.1
+    container_name: alloy
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+    logging: *logcfg
+
+  tempo:
+    image: grafana/tempo:2.6.0
+    container_name: tempo
+    command: -config.file=/etc/tempo/tempo.yaml
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+    restart: unless-stopped
+    logging: *logcfg
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.109.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otel/config.yaml:ro
+    depends_on:
+      - tempo
+    restart: unless-stopped
+    logging: *logcfg
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    restart: unless-stopped
+    logging: *logcfg
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./observability/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    restart: unless-stopped
+    logging: *logcfg
+
+volumes:
+  loki-data:
+  tempo-data:

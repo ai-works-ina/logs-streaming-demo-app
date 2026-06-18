@@ -1,0 +1,31 @@
+// Grafana Alloy: discover the lab's Docker containers, tail their JSON logs, and push to
+// Loki with a `service` label derived from the container name — so the agent's LokiLogSource
+// can query `{service="api"}`. Requires the docker socket mounted read-only.
+
+discovery.docker "lab" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// container name (e.g. "/api") -> service="api"
+discovery.relabel "lab" {
+  targets = discovery.docker.lab.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "lab" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.lab.output
+  labels     = { stack = "sre-demo" }
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
