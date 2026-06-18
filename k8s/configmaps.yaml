@@ -1,0 +1,71 @@
+# Config carried over from the compose bind-mounts: the gateway's nginx.conf and postgres'
+# seed schema. Kept verbatim from gateway/nginx.conf and db/init.sql so behaviour is identical
+# to the compose lab. (Keep these in sync if the source files change.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-conf
+  namespace: lab
+data:
+  nginx.conf: |
+    worker_processes 1;
+    error_log /dev/stderr warn;
+
+    events { worker_connections 1024; }
+
+    http {
+        log_format json_combined escape=json
+          '{"ts":"$time_iso8601","service":"gateway","level":"INFO",'
+          '"event":"http_access","method":"$request_method","path":"$request_uri",'
+          '"status":$status,"latency_ms":$request_time,'
+          '"upstream":"$upstream_addr","client":"$remote_addr"}';
+
+        access_log /dev/stdout json_combined;
+
+        upstream webapp_upstream {
+            server webapp:5000;
+        }
+
+        server {
+            listen 80;
+
+            location / {
+                proxy_pass http://webapp_upstream;
+                proxy_connect_timeout 2s;
+                proxy_read_timeout 5s;
+                proxy_set_header X-Request-ID $request_id;
+            }
+        }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-init
+  namespace: lab
+data:
+  init.sql: |
+    CREATE TABLE products (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        price NUMERIC(10,2) NOT NULL
+    );
+
+    CREATE TABLE users (
+        id SERIAL PRIMARY KEY,
+        username TEXT NOT NULL
+    );
+
+    CREATE TABLE orders (
+        id SERIAL PRIMARY KEY,
+        item TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ DEFAULT now()
+    );
+
+    INSERT INTO products (name, price) VALUES
+      ('widget', 9.99), ('gadget', 19.99), ('sprocket', 4.50),
+      ('flange', 12.00), ('gizmo', 29.99), ('doohickey', 7.25);
+
+    INSERT INTO users (username) VALUES
+      ('alice'), ('bob'), ('carol'), ('dave'), ('erin'), ('frank');

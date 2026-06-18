@@ -84,6 +84,17 @@ app.wsgi_app = _Dispatcher(app.wsgi_app, {"/metrics": _mwa()})
 CHAOS = {"latency": False, "errors": False}
 _leak = []  # holds allocated memory during the memleak scenario
 
+# Boot-time chaos: a *deploy* can ship a broken build by setting CHAOS_ON_BOOT to a
+# comma-separated list of scenarios (e.g. "errors" or "latency,errors"). This is the
+# ground-truthed mechanism behind the CI/CD "bad deploy" beat — the same image, deployed
+# with this env, comes up faulty so the agent can attribute the incident to the deploy and
+# roll it back. Empty/unset (the default) = a perfectly healthy deploy.
+for _scenario in (s.strip() for s in os.environ.get("CHAOS_ON_BOOT", "").split(",")):
+    if _scenario in CHAOS:
+        CHAOS[_scenario] = True
+        log.warning(f"boot-time chaos enabled from deploy: {_scenario}",
+                    extra={"event": "chaos_toggle"})
+
 
 def chaos_delay():
     if CHAOS["latency"]:

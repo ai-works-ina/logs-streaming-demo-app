@@ -1,0 +1,10 @@
+# The lab runs in the `lab` namespace — the same namespace the SRE agent's scoped RBAC
+# (sre-agent-remediator Role in the agent repo's deploy/k8s/rbac.yaml) is bound to, and the
+# default namespace of its KubernetesActionBackend. Deployment names == service names so the
+# agent's identity service->Deployment mapping works unchanged.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab
+  labels:
+    app.kubernetes.io/part-of: sre-lab

@@ -1,0 +1,17 @@
+# kind cluster for the SRE lab. Single node (control-plane), with host port mappings so the
+# gateway and the observability UIs are reachable on localhost at the same ports the compose
+# lab published — the SRE agent's telemetry URLs (Prometheus :9090, Loki :3100, Tempo :3200)
+# therefore don't change. Each maps host port -> a fixed NodePort on a NodePort Service.
+#
+#   create with:  kind create cluster --name sre-lab --config k8s/kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sre-lab
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - {containerPort: 30080, hostPort: 8080, protocol: TCP}   # gateway  -> http://localhost:8080
+      - {containerPort: 30090, hostPort: 9090, protocol: TCP}   # prometheus
+      - {containerPort: 30031, hostPort: 3100, protocol: TCP}   # loki
+      - {containerPort: 30032, hostPort: 3200, protocol: TCP}   # tempo
+      - {containerPort: 30030, hostPort: 3000, protocol: TCP}   # grafana

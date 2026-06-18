@@ -1,0 +1,309 @@
+# Application tier. Deployment name == service name == in-cluster DNS name, so every bare
+# hostname the app code already uses (api:5000, http://auth:5000, http://otel-collector:4318,
+# redis, postgres) resolves unchanged — the migration from compose needs no app-code change.
+# App images are built locally and `kind load`-ed (sre-lab-<svc>:dev); the CI deploy workflow
+# overrides the image to a GHCR tag via `kubectl set image`.
+#
+# ---- gateway (nginx) -------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: lab
+  labels: {app: gateway, tier: edge}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: gateway}}
+  template:
+    metadata:
+      labels: {app: gateway, tier: edge}
+    spec:
+      containers:
+        - name: gateway
+          image: nginx:1.27-alpine
+          ports: [{name: http, containerPort: 80}]
+          volumeMounts:
+            - {name: conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true}
+          readinessProbe:
+            tcpSocket: {port: 80}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: conf
+          configMap: {name: gateway-conf}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: lab
+spec:
+  # NodePort so the kind extraPortMapping (host 8080 -> node 30080) exposes the lab at
+  # http://localhost:8080, matching the compose lab's published port.
+  type: NodePort
+  selector: {app: gateway}
+  ports: [{name: http, port: 80, targetPort: 80, nodePort: 30080}]
+---
+# ---- webapp ----------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp
+  namespace: lab
+  labels: {app: webapp, tier: app}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: webapp}}
+  template:
+    metadata:
+      labels: {app: webapp, tier: app}
+    spec:
+      containers:
+        - name: webapp
+          image: sre-lab-webapp:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: SERVICE_NAME, value: webapp}
+            - {name: API_URL, value: "http://api:5000"}
+            - {name: REQUEST_TIMEOUT, value: "3"}
+            - {name: OTEL_ENABLED, value: "1"}
+            - {name: OTEL_SERVICE_NAME, value: webapp}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector:4318"}
+            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf"}
+            - {name: OTEL_TRACES_EXPORTER, value: otlp}
+            - {name: OTEL_METRICS_EXPORTER, value: none}
+            - {name: OTEL_LOGS_EXPORTER, value: none}
+          ports: [{name: http, containerPort: 5000}]
+          readinessProbe:
+            httpGet: {path: /health, port: 5000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp
+  namespace: lab
+spec:
+  selector: {app: webapp}
+  ports: [{name: http, port: 5000, targetPort: 5000}]
+---
+# ---- api -------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: lab
+  labels: {app: api, tier: app}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: api}}
+  template:
+    metadata:
+      labels: {app: api, tier: app}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: api
+          image: sre-lab-api:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: SERVICE_NAME, value: api}
+            - {name: DB_HOST, value: postgres}
+            - {name: DB_USER, value: demo}
+            - {name: DB_PASSWORD, value: demo}
+            - {name: DB_NAME, value: demo}
+            - {name: REDIS_HOST, value: redis}
+            - {name: AUTH_URL, value: "http://auth:5000"}
+            # Bad-deploy lever: a deploy can ship a broken build by setting this to "errors"
+            # or "latency". Empty (default) = a healthy deploy. Drives the CI/CD rollback beat.
+            - {name: CHAOS_ON_BOOT, value: ""}
+            - {name: OTEL_ENABLED, value: "1"}
+            - {name: OTEL_SERVICE_NAME, value: api}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector:4318"}
+            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf"}
+            - {name: OTEL_TRACES_EXPORTER, value: otlp}
+            - {name: OTEL_METRICS_EXPORTER, value: none}
+            - {name: OTEL_LOGS_EXPORTER, value: none}
+          ports: [{name: http, containerPort: 5000}]
+          readinessProbe:
+            httpGet: {path: /health, port: 5000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # mem cap mirrors the compose mem_limit so the memleak scenario ends in a real OOM kill
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: lab
+spec:
+  selector: {app: api}
+  ports: [{name: http, port: 5000, targetPort: 5000}]
+---
+# ---- auth ------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth
+  namespace: lab
+  labels: {app: auth, tier: app}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: auth}}
+  template:
+    metadata:
+      labels: {app: auth, tier: app}
+    spec:
+      containers:
+        - name: auth
+          image: sre-lab-auth:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: SERVICE_NAME, value: auth}
+            - {name: REDIS_HOST, value: redis}
+            - {name: CHAOS_ON_BOOT, value: ""}
+            - {name: OTEL_ENABLED, value: "1"}
+            - {name: OTEL_SERVICE_NAME, value: auth}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector:4318"}
+            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf"}
+            - {name: OTEL_TRACES_EXPORTER, value: otlp}
+            - {name: OTEL_METRICS_EXPORTER, value: none}
+            - {name: OTEL_LOGS_EXPORTER, value: none}
+          ports: [{name: http, containerPort: 5000}]
+          readinessProbe:
+            httpGet: {path: /health, port: 5000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth
+  namespace: lab
+spec:
+  selector: {app: auth}
+  ports: [{name: http, port: 5000, targetPort: 5000}]
+---
+# ---- payments --------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+  namespace: lab
+  labels: {app: payments, tier: app}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: payments}}
+  template:
+    metadata:
+      labels: {app: payments, tier: app}
+    spec:
+      containers:
+        - name: payments
+          image: sre-lab-payments:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: SERVICE_NAME, value: payments}
+            - {name: CHAOS_ON_BOOT, value: ""}
+            - {name: OTEL_ENABLED, value: "1"}
+            - {name: OTEL_SERVICE_NAME, value: payments}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector:4318"}
+            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf"}
+            - {name: OTEL_TRACES_EXPORTER, value: otlp}
+            - {name: OTEL_METRICS_EXPORTER, value: none}
+            - {name: OTEL_LOGS_EXPORTER, value: none}
+          ports: [{name: http, containerPort: 5000}]
+          readinessProbe:
+            httpGet: {path: /health, port: 5000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments
+  namespace: lab
+spec:
+  selector: {app: payments}
+  ports: [{name: http, port: 5000, targetPort: 5000}]
+---
+# ---- worker (no inbound HTTP; exposes /metrics on 5000 for Prometheus) ------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: lab
+  labels: {app: worker, tier: app}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: worker}}
+  template:
+    metadata:
+      labels: {app: worker, tier: app}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: worker
+          image: sre-lab-worker:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: SERVICE_NAME, value: worker}
+            - {name: REDIS_HOST, value: redis}
+            - {name: DB_HOST, value: postgres}
+            - {name: DB_USER, value: demo}
+            - {name: DB_PASSWORD, value: demo}
+            - {name: DB_NAME, value: demo}
+            - {name: PAYMENTS_URL, value: "http://payments:5000"}
+            - {name: OTEL_ENABLED, value: "1"}
+            - {name: OTEL_SERVICE_NAME, value: worker}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector:4318"}
+            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf"}
+            - {name: OTEL_TRACES_EXPORTER, value: otlp}
+            - {name: OTEL_METRICS_EXPORTER, value: none}
+            - {name: OTEL_LOGS_EXPORTER, value: none}
+          ports: [{name: metrics, containerPort: 5000}]
+          readinessProbe:
+            tcpSocket: {port: 5000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: lab
+spec:
+  selector: {app: worker}
+  ports: [{name: metrics, port: 5000, targetPort: 5000}]
+---
+# ---- loadgen (synthetic user; no Service needed) ---------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: lab
+  labels: {app: loadgen, tier: app}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: loadgen}}
+  template:
+    metadata:
+      labels: {app: loadgen, tier: app}
+    spec:
+      containers:
+        - name: loadgen
+          image: sre-lab-loadgen:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: TARGET_URL, value: "http://gateway:80"}
+            - {name: BASE_RPS, value: "4"}
