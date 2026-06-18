@@ -6,6 +6,8 @@
 # it does a `kubectl rollout undo` (back one revision). Either way CHAOS_ON_BOOT is cleared, so
 # the rolled-back service comes up healthy. Steps run in PowerShell (native Windows runner shell).
 name: rollback
+# run-name sets display_title, parsed by the agent's GithubActionsChangeFeed ("rollback <service>").
+run-name: rollback ${{ inputs.service }}
 
 on:
   workflow_dispatch:

@@ -10,6 +10,9 @@
 # Steps run in PowerShell — the native shell on the Windows self-hosted runner (avoids the
 # `bash` -> WSL resolution trap). The image tag is built once as a job-level expression env var.
 name: deploy
+# run-name sets the run's display_title, which the agent's GithubActionsChangeFeed parses to
+# attribute the deploy to a service ("deploy <service> @ <sha>").
+run-name: deploy ${{ inputs.service }} @ ${{ github.sha }}
 
 on:
   workflow_dispatch:
