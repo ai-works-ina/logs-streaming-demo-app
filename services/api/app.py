@@ -1,3 +1,4 @@
+# sre-agent M6 live validation marker (safe to remove)
 """api: core service. Talks to Postgres and Redis. Hosts chaos toggles for incident injection."""
 import json
 import logging
