@@ -1,0 +1,75 @@
+# Deploy on merge to main (D-054) — the "merge then deploy" half of the agent-authored code-fix
+# loop. When a fix PR merges, the changed service(s) are rebuilt from the merged source and rolled
+# out HEALTHY (CHAOS_ON_BOOT cleared) onto the kind cluster, so the agent's verify loop sees the
+# fix take effect. This complements deploy.yml (manual/dispatch, with the broken lever); here every
+# push to main auto-deploys whatever services changed. Self-hosted runner (needs kind), PowerShell.
+name: deploy-on-merge
+run-name: deploy-on-merge ${{ github.sha }}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/**"
+
+concurrency: deploy-on-merge   # serialise merges
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    defaults:
+      run:
+        shell: powershell -ExecutionPolicy Bypass -Command ". '{0}'"
+    env:
+      KCTX: kind-sre-lab
+      CLUSTER: sre-lab
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history to diff the merge against its parent
+
+      - name: Preflight — runner can reach the cluster
+        run: |
+          foreach ($t in 'docker','kind','kubectl','git') {
+            if (-not (Get-Command $t -ErrorAction SilentlyContinue)) {
+              Write-Host "::error::'$t' is not on the runner PATH"; exit 1
+            }
+          }
+          kind export kubeconfig --name $env:CLUSTER
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::kind export kubeconfig failed"; exit 1 }
+          kubectl --context $env:KCTX -n lab get ns lab | Out-Null
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::cannot reach $env:KCTX / namespace lab"; exit 1 }
+
+      - name: Determine which services changed
+        id: changed
+        run: |
+          $before = "${{ github.event.before }}"
+          $sha = "${{ github.sha }}"
+          # first push / unknown parent -> compare against the previous commit
+          if (-not $before -or $before -eq "0000000000000000000000000000000000000000") { $before = "$sha~1" }
+          $diff = git diff --name-only $before $sha -- services/
+          $known = @('api','webapp','auth','payments','worker')
+          $svcs = @()
+          foreach ($line in $diff) {
+            if ($line -match '^services/([^/]+)/') { if ($known -contains $matches[1]) { $svcs += $matches[1] } }
+          }
+          $svcs = $svcs | Select-Object -Unique
+          if (-not $svcs) { Write-Host "no known service changed; nothing to deploy"; }
+          Write-Host ("changed services: " + ($svcs -join ', '))
+          Add-Content $env:GITHUB_OUTPUT ("services=" + ($svcs -join ' '))
+
+      - name: Build, load, and roll out each changed service (healthy)
+        if: steps.changed.outputs.services != ''
+        run: |
+          $sha = "${{ github.sha }}"
+          foreach ($svc in ("${{ steps.changed.outputs.services }}" -split ' ')) {
+            if (-not $svc) { continue }
+            $img = "sre-lab-$svc`:$sha"
+            Write-Host ("=== deploying $svc -> $img ===")
+            docker build -t $img ("services/" + $svc); if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            kind load docker-image $img --name $env:CLUSTER; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            kubectl --context $env:KCTX -n lab set env ("deploy/" + $svc) "CHAOS_ON_BOOT="; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            kubectl --context $env:KCTX -n lab set image ("deploy/" + $svc) ($svc + "=" + $img); if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            kubectl --context $env:KCTX -n lab rollout status ("deploy/" + $svc) --timeout=120s; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Add-Content $env:GITHUB_STEP_SUMMARY ("deployed $svc @ $sha (healthy)")
+          }

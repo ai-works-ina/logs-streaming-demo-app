@@ -1,0 +1,38 @@
+# CI gate for pull requests (D-054). This is the REQUIRED status check that, together with a human
+# approving review, gates GitHub-native auto-merge of an SRE-agent-authored fix PR. Its job is to
+# guarantee an agent-authored change can never merge if it doesn't even parse — the cheapest, most
+# important backstop for LLM-authored code. Runs on GitHub-hosted runners (no kind needed), so it
+# does not tie up the self-hosted deploy runner.
+name: ci
+run-name: ci ${{ github.event.pull_request.head.ref }}
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Byte-compile all service Python (a broken fix must never merge)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find services -name '*.py' | sort)
+          if [ "${#files[@]}" -eq 0 ]; then echo "no service python found"; exit 0; fi
+          printf 'compiling %d files\n' "${#files[@]}"
+          python -m py_compile "${files[@]}"
+          echo "py_compile OK"
+
+      - name: Static checks (undefined names / obvious errors) — best effort
+        shell: bash
+        run: |
+          python -m pip install --quiet pyflakes || exit 0
+          # report but do not fail the gate on pre-existing lint in the lab code
+          python -m pyflakes services || true
