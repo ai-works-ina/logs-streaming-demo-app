@@ -203,75 +203,13 @@ def orders():
                     "internal_error")
     item = (request.json or {}).get("item", "widget")
     try:
-        _, db_ms = db_query("INSERT INTO orders (item, status) VALUES (%s, 'pending')",
-                            (item,), fetch=False)
-        try:
-            get_redis().rpush("jobs", json.dumps({"type": "fulfill_order", "item": item, "request_id": rid}))
-        except redis_lib.exceptions.RedisError as exc:
-            log.error(f"order saved but job enqueue failed: {exc}",
-                      extra={"event": "enqueue_failed", "request_id": rid, "error": "redis_unreachable"})
+        _, db_ms = db_query("INSERT INTO orders (item, status) VALUES (%s, 'pending')", (item,), fetch=False)
     except psycopg2.OperationalError as exc:
         return fail(rid, "/orders", "database connection failed", "db_unreachable", 503, exc)
+    except psycopg2.Error as exc:
+        return fail(rid, "/orders", "database error", "db_error", 500, exc)
 
     latency = round((time.time() - start) * 1000, 1)
-    log.info(f"POST /orders ok item={item}", extra={"event": "request", "request_id": rid,
-                                                    "path": "/orders", "status": 201,
-                                                    "latency_ms": latency, "db_ms": db_ms})
-    return jsonify({"status": "created", "item": item}), 201
-
-
-@app.route("/users/lookup")
-def users_lookup():
-    rid = req_id()
-    start = time.time()
-    denied = verify_auth(rid, "/users/lookup")
-    if denied:
-        return denied
-    chaos_delay()
-    if chaos_error():
-        return fail(rid, "/users/lookup", "user lookup failed: session store corrupt",
-                    "internal_error")
-    try:
-        rows, db_ms = db_query("SELECT id, username FROM users ORDER BY random() LIMIT 1")
-    except psycopg2.OperationalError as exc:
-        return fail(rid, "/users/lookup", "database connection failed", "db_unreachable", 503, exc)
-    latency = round((time.time() - start) * 1000, 1)
-    log.info("GET /users/lookup ok", extra={"event": "request", "request_id": rid,
-                                            "path": "/users/lookup", "status": 200,
-                                            "latency_ms": latency, "db_ms": db_ms})
-    user = {"id": rows[0][0], "username": rows[0][1]} if rows else None
-    return jsonify({"user": user})
-
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "healthy", "service": SERVICE})
-
-
-# ---- chaos control --------------------------------------------------------
-@app.route("/chaos/<scenario>/<action>", methods=["POST"])
-def chaos(scenario, action):
-    if scenario in CHAOS and action in ("on", "off"):
-        CHAOS[scenario] = action == "on"
-        log.warning(f"chaos scenario '{scenario}' turned {action}",
-                    extra={"event": "chaos_toggle"})
-        return jsonify({"scenario": scenario, "state": action})
-
-    if scenario == "memleak" and action == "start":
-        def leak():
-            log.warning("memory leak scenario started", extra={"event": "chaos_toggle"})
-            while True:
-                _leak.append(bytearray(8 * 1024 * 1024))  # +8MB per tick
-                if len(_leak) % 4 == 0:
-                    log.warning(f"memory usage growing: ~{len(_leak) * 8}MB allocated",
-                                extra={"event": "memory_pressure"})
-                time.sleep(1.5)
-        threading.Thread(target=leak, daemon=True).start()
-        return jsonify({"scenario": "memleak", "state": "started"})
-
-    return jsonify({"error": "unknown scenario"}), 404
-
-
-if __name__ == "__main__":
-    log.info("api starting up", extra={"event": "startup"})
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+    log.info("POST /orders ok", extra={"event": "request", "request_id": rid, "path": "/orders",
+                                      "status": 200, "latency_ms": latency, "db_ms": db_ms})
+    return jsonify({"item": item, "status": "pending"})
