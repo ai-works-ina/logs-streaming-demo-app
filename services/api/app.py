@@ -206,10 +206,9 @@ def orders():
         _, db_ms = db_query("INSERT INTO orders (item, status) VALUES (%s, 'pending')", (item,), fetch=False)
     except psycopg2.OperationalError as exc:
         return fail(rid, "/orders", "database connection failed", "db_unreachable", 503, exc)
-    except psycopg2.Error as exc:
-        return fail(rid, "/orders", "database error", "db_error", 500, exc)
 
     latency = round((time.time() - start) * 1000, 1)
     log.info("POST /orders ok", extra={"event": "request", "request_id": rid, "path": "/orders",
-                                      "status": 200, "latency_ms": latency, "db_ms": db_ms})
-    return jsonify({"item": item, "status": "pending"})
+                                        "status": 201, "latency_ms": latency, "db_ms": db_ms,
+                                        "cache": "miss"})
+    return jsonify({"order": {"item": item, "status": "pending"}}), 201
