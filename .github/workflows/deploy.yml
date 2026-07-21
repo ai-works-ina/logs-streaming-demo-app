@@ -83,6 +83,20 @@ jobs:
 
       - name: Wait for rollout
         run: |
+          if ('${{ github.event.inputs.broken }}' -eq 'true') {
+            # A broken deploy is DESIGNED to come up unhealthy (CHAOS_ON_BOOT=errors), so its
+            # rollout never reaches Available. Waiting for readiness would time out and mark the
+            # deploy FAILED — and because the agent's change feed only records SUCCESSFUL deploy
+            # runs, a failed run emits no `deploy` event, so the agent never sees the deploy and
+            # never proposes the rollback (the whole point of this beat). So for a broken deploy we
+            # give the new (erroring) pods a moment to start, then report success WITHOUT requiring
+            # readiness: the deploy has landed (image + CHAOS lever set, rollout triggered), which
+            # is exactly the change the rollback beat needs to see.
+            kubectl --context $env:KCTX -n lab rollout status ("deploy/" + $env:SERVICE) --timeout=30s
+            Write-Host "broken deploy: not requiring readiness (expected unhealthy) — deploy landed."
+            exit 0
+          }
+          # A healthy deploy must actually become Available; a real rollout failure fails the job.
           kubectl --context $env:KCTX -n lab rollout status ("deploy/" + $env:SERVICE) --timeout=120s
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
